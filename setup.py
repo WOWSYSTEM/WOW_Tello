@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='wow_tello',
-    version='1.1.0', # 수정되면 꼭 version 업데이트하기
+    version='1.3.1', # 수정되면 꼭 version 업데이트하기
     description='Wow IoT Platform API libraries',
     author='wowsystem, nobu',
     author_email='contact@wowsystem.co.kr',
