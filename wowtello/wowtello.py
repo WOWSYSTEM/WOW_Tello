@@ -6,7 +6,11 @@ import numpy as np
 import h264decoder
 import cv2
 
+<<<<<<< Updated upstream
 __WOW_TELLO_DRONE_VERSION__ = "1.3.0"
+=======
+__WOW_TELLO_DRONE_VERSION__ = "1.4.0"
+>>>>>>> Stashed changes
 
 TELLO_CMD_PORT = 8889
 TELLO_DATA_PORT = 8890
@@ -450,21 +454,186 @@ class TelloControlTower(TelloComModule, TelloFlightDataReceiver):
 	
 	def searchTrafficInNetwork(self, base_ip = '192.168.20.', start_addr = 2, end_addr = 254):
 		self.tello_ip_list.clear()
-		for i in range(start_addr, (end_addr - start_addr) + 1):
+		
+		for i in range(start_addr, end_addr + 1):
 			#command = input('Input the command : ')
 			command = "command"
 			ip = base_ip + str(i)
 			tello_address = (ip, 8889)
+			wprt("searchTrafficInNetwork %s %s" % (command.encode('utf-8'), tello_address))
 			self.sock.sendto(command.encode('utf-8'), tello_address)
 			time.sleep(0.01)
 		time.sleep(1)
 
+<<<<<<< Updated upstream
 
 # 군집드론으로 사용하기 위한 클래스
 class TelloTraffic():
 	ip = '127.0.0.1'
 	mAddr = (ip, TELLO_CMD_PORT)
 	is_wait_response = False # 현재 응답을 기다리는 상태일 때 True
+=======
+	def tower_close(self):
+		self.sock.close()
+
+"""
+응답 데이터 관리 클래스
+"""
+class _RES_:
+	_req_id_ = None
+	_res_list = []
+	_list_lock = threading.Lock()
+	def __init__(self, id):
+		self._req_id_ = id
+		self._last_res_time = time.time()
+	
+	def getID(self):
+		return self._req_id_
+
+	def append(self, response):
+		self._last_res_time = time.time()
+		try:
+			self._list_lock.acquire()
+			self._res_list.append(response)
+		finally:
+			self._list_lock.release()
+	
+	def pop(self):
+		result = None
+		try:
+			self._list_lock.acquire()
+			if len(self._res_list) > 0:
+				result = self._res_list.pop(0)
+		finally:
+			self._list_lock.release()
+
+		return result
+	
+	def clear(self):
+		self._res_list.clear()
+
+
+"""
+요청, 응답 관련 데이터 처리 클래스
+하나의 객체를 생성하고, 여러 쓰레드로 실행되고 있는 메소드에서 요청하였을 때
+하나의 응답 큐에서 각 메소드별로 응답 데이터를 관리한다.
+
+이 클래스는 요청 쓰레드는 N개
+응답 쓰레드는 1개일 때 활용한다. (UDP의 경우나 소프트웨어 설계에 따름)
+
+########## 클래스 특징 ##########
+1. 요청 시 요청 ID 발급
+2. 요청 ID 리스트에 추가
+3. 응답 데이터 큐 별도로 관리
+4. 수신을 담당하는 쓰레드에서 해당 객체로 응답큐를 추가
+	4-1. 이 때 요청 ID 리스트가 비어 있으면, 큐를 추가하지 않음
+	4-2. 응답 큐는 요청 ID마다 생성되는 객체마다 생성되며, 모든 객체마다 별도로 넣어 줌
+5. 요청 쓰레드는 response_check를 반복하여 자신의 응답이 들어왔는 지 체크
+6. REQRES 클래스는 요청 ID마다 객체를 별도로 생성하여 데이터를 관리 함
+
+########## 사용 방법 ##########
+1. publish_request() 로 요청 ID 발행
+"""
+class REQRES:
+	_req_list = []
+	
+	def __init__(self):
+		self.list_lock = threading.Lock()
+
+	def _check_duplicate_id(self, id):
+		self.list_lock.acquire()
+		for req in self._req_list:
+			if id == req.getID():
+				self.list_lock.release()
+				return True
+		
+		self.list_lock.release()
+		return False
+
+	# 요청 ID 발행(요청 쓰레드에서 처리)
+	def publish_request(self):
+		id_gen_try = 0 # 여러번 ID가 중복 나와 무한 루프에 빠지는 지 체크. 근데 설마.. 그럴 가능성이 있나..
+		pub_id = -1
+		while(True):
+			id = int(random.random() * 1000)
+			if not self._check_duplicate_id(id):
+				pub_id = id
+				break
+			
+			id_gen_try += 1
+			if(id_gen_try > 999):
+				print("Critical : Request ID publishing error")
+				return -1
+			
+		req = _RES_(pub_id) # _RES_ 클래스 자체는 응답데이터 관련 처리 클래스이지만, 실제 관리 할 때 요청마다 만들어주므로, 코드명이 다른건 의도 된 것
+		self.list_lock.acquire()
+		self._req_list.append(req)
+		self.list_lock.release()
+
+		return pub_id
+
+	# 요청 완료(요청 쓰레드에서 처리)
+	def finish_request(self, id):
+		self.list_lock.acquire()
+		for req in self._req_list:
+			if id == req.getID():
+				req.clear()
+				self._req_list.remove(req)
+				break
+		self.list_lock.release()
+
+	# 응답 큐 추가(수신 쓰레드에서 처리)
+	def add_response(self, response):
+		self.list_lock.acquire()
+		for req in self._req_list:
+			req.append(response)
+		self.list_lock.release()
+
+	# 요청 체크(요청 쓰레드에서 처리)
+	def response_check(self, id, response):
+		res_object = None
+		self.list_lock.acquire()
+		for res in self._req_list:
+			if id == res.getID():
+				res_object = res
+				break
+		self.list_lock.release()
+
+		# 사실 해당 오류는 발생하면 안됨
+		if(res_object is None):
+			print("입력 ID에 해당하는 객체 없음!!")
+			return -1
+
+		data = str(res_object.pop()).strip()
+		if data != "None": # 만약 데이터가 수신되었을 때
+			if RESPONSE_ERROR in data:
+				wprt("응답 에러 : %s" % str(data))
+				ret = RESP_ERROR
+
+			elif RESPONSE_UNKNOWN_COMMAND in data:
+				wprt("알 수 없는 명령")
+				ret = RESP_UNKNOWN
+
+			elif response == data: # 대기하려는 응답데이터일 때
+				wprt("응답 수신")
+				ret = RESP_OK
+
+			else:
+				wprt("정의되지 않은 응답 : %s" % str(data))
+				ret = RESP_ERROR
+		else:
+			ret = RESP_NONE
+
+		return ret
+
+
+# 텔로 명령 처리와 관련된 클래스
+# !!!IMPORTANT!!!
+# Core 클래스는 소켓을 초기화 하지 않는다. 
+class TelloCore(TelloComModule):
+	__version__ = __WOW_TELLO_DRONE_VERSION__
+	mAddr = ('127.0.0.1', TELLO_CMD_PORT)
+>>>>>>> Stashed changes
 	response_timeout = time.time() # 응답 대기 시간 체크 변수
 	response_cmd = None # 대기하는 응답 커맨드
 	sended_cmd = None # 전송한 커맨드
@@ -1165,6 +1334,7 @@ class Tello(TelloComModule, TelloFlightDataReceiver):
 			print("객체 초기화 중 에러!!\n__name__ :" + str(__name__) + "\nException :" + str(e))
 
 	def __process_thread(self):
+		time.sleep(1.5)
 		while True:
 			try:
 				if not self.is_connected():
@@ -1478,6 +1648,10 @@ class Tello(TelloComModule, TelloFlightDataReceiver):
 		except:
 			return -1
 		return result
+	
+	def set_ap(self, ssid, passwd):
+		wprt("WiFi AP 접속")
+		self.send_command("ap %s %s" % (str(ssid), str(passwd)))
 
 	# 외부 LED 제어 함수
 	# @param r : 0-255
@@ -1714,7 +1888,7 @@ class Tello(TelloComModule, TelloFlightDataReceiver):
 			'EXT mled sc',
 			timeout=30, max_retry=0)
 
-	# 부팅시 출력되는 이미지를 제거한다.
+	# 도트매트릭스 밝기 설정
 	def ext_mled_set_brightness(self, brightness):
 		brightness = constrain(brightness, 0, 255)
 		wprt("외부 Dot-matrix Display 밝기 설정")
